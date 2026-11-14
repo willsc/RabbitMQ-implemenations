@@ -1,0 +1,34 @@
+# Replace every infrastructure identifier with your environment's values.
+name   = "prod-rabbit"
+region = "eu-west-2"
+vpc_id = "vpc-0123456789abcdef0"
+nodes = {
+  a = { subnet_id = "subnet-00000000000000001", ami_id = "ami-00000000000000001" }
+  b = { subnet_id = "subnet-00000000000000002", ami_id = "ami-00000000000000001" }
+  c = { subnet_id = "subnet-00000000000000003", ami_id = "ami-00000000000000001" }
+}
+# Use PUBLIC subnets here only when tls_public=true; broker subnets stay private.
+tls_subnet_ids   = ["subnet-00000000000000001", "subnet-00000000000000002", "subnet-00000000000000003"]
+tls_public       = false
+tls_dns          = { zone_id = "Z0123456789", name = "rabbit.example.com" }
+tls_client_cidrs = ["10.20.0.0/16"]
+# Set to [] once private clients have moved to TLS.
+plaintext_client_cidrs  = ["10.20.0.0/16"]
+management_dns          = { zone_id = "Z0123456789", name = "rabbit-ui.example.com" }
+management_client_cidrs = ["10.20.5.0/24"]
+bootstrap_secret_arn    = "arn:aws:secretsmanager:eu-west-2:123456789012:secret:prod-rabbit-REPLACE"
+kms_key_arn             = "arn:aws:kms:eu-west-2:123456789012:key/REPLACE"
+secret_kms_key_arns     = ["arn:aws:kms:eu-west-2:123456789012:key/REPLACE"]
+definitions = {
+  bucket     = "REPLACE-versioned-private-bucket"
+  key        = "rabbitmq/definitions.json"
+  version_id = "REPLACE-with-actual-S3-version-id"
+  sha256     = "REPLACE-with-actual-64-character-sha256"
+}
+federation_egress = { TKY = "10.30.0.0/16", LDN = "10.40.0.0/16" }
+# Prometheus scrapers for per-queue, federation and connection metrics.
+monitoring_cidrs  = ["10.20.9.0/24"]
+alarm_action_arns = ["arn:aws:sns:eu-west-2:123456789012:messaging-oncall"]
+# Only set true if the queue audit shows non-durable, non-exclusive queues.
+allow_transient_nonexclusive_queues = false
+tags = { Environment = "staging", Owner = "messaging" }

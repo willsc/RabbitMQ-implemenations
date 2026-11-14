@@ -1,0 +1,71 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+install -d -m 0750 /etc/rabbitmq-estate /opt/rabbitmq-estate
+printf '%s' '${config}' | base64 -d > /etc/rabbitmq-estate/config.json
+printf '%s' '${runtime}' | base64 -d > /opt/rabbitmq-estate/bootstrap.py
+printf '%s' '${health}' | base64 -d > /opt/rabbitmq-estate/health.py
+cat > /etc/systemd/system/rabbitmq-bootstrap.service <<'UNIT'
+[Unit]
+Description=Prepare RabbitMQ storage, secrets and configuration
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+Before=rabbitmq.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/rabbitmq-estate/bootstrap.py
+RemainAfterExit=yes
+TimeoutStartSec=1800
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/rabbitmq.service <<'UNIT'
+[Unit]
+Description=RabbitMQ (immutable image on Ubuntu 26.04)
+Requires=docker.service rabbitmq-bootstrap.service
+After=docker.service rabbitmq-bootstrap.service
+StartLimitIntervalSec=0
+[Service]
+Type=simple
+# A container left behind by a dockerd crash would make `docker run --name rabbitmq` fail.
+ExecStartPre=-/usr/bin/docker rm --force rabbitmq
+ExecStartPre=/usr/bin/python3 /opt/rabbitmq-estate/bootstrap.py --wait-for-peer
+ExecStart=/opt/rabbitmq-estate/start-broker
+ExecStop=/usr/bin/docker stop --time 120 rabbitmq
+Restart=always
+RestartSec=30
+TimeoutStartSec=1800
+TimeoutStopSec=150
+LimitNOFILE=131072
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/systemd/system/rabbitmq-health.service <<'UNIT'
+[Unit]
+Description=RabbitMQ readiness HTTP endpoint and CloudWatch metrics
+After=docker.service
+[Service]
+ExecStart=/usr/bin/python3 /opt/rabbitmq-estate/health.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+UNIT
+cat > /etc/sysctl.d/90-rabbitmq.conf <<'SYSCTL'
+net.core.somaxconn = 4096
+net.ipv4.tcp_keepalive_time = 60
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_keepalive_probes = 3
+SYSCTL
+sysctl --system
+systemctl daemon-reload
+systemctl enable rabbitmq-bootstrap rabbitmq rabbitmq-health
+# --no-block: followers can wait minutes for a peer; do not hold cloud-final open meanwhile.
+systemctl start --no-block rabbitmq-health rabbitmq

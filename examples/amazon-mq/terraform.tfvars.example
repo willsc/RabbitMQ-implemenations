@@ -1,0 +1,14 @@
+name                      = "prod-managed-rabbit"
+region                    = "eu-west-2"
+vpc_id                    = "vpc-0123456789abcdef0"
+subnet_ids                = ["subnet-00000000000000001", "subnet-00000000000000002", "subnet-00000000000000003"]
+client_cidrs              = ["10.20.0.0/16"]
+client_security_group_ids = [] # e.g. ["sg-0123456789abcdef0"] for in-VPC application tiers
+management_cidrs          = ["10.20.5.0/24"]
+admin_username            = "bootstrap-admin"
+# Supply admin_password through your secret-enabled CI environment (TF_VAR_admin_password).
+# The AWS provider WILL store the password in Terraform state.
+kms_key_arn         = "arn:aws:kms:eu-west-2:123456789012:key/REPLACE"
+alarm_action_arns   = ["arn:aws:sns:eu-west-2:123456789012:messaging-oncall"]
+resource_share_arns = [] # Approved VPC Lattice RAM shares for private TKY/LDN upstreams.
+tags = { Environment = "staging", Owner = "messaging" }
