@@ -38,7 +38,7 @@ variable "kms_key_id" {
 
 variable "rabbitmq_image" {
   type        = string
-  description = "Approved RabbitMQ 4.3 image pinned by SHA256 digest, including tag for readability."
+  description = "Approved RabbitMQ 4.4 image pinned by SHA256 digest, including tag for readability."
   validation {
     condition     = can(regex("^[A-Za-z0-9./:_-]+@sha256:[a-f0-9]{64}$", var.rabbitmq_image))
     error_message = "Supply an immutable image digest, not a floating tag."

@@ -1,4 +1,4 @@
-# PRODUCTION — RabbitMQ 4.3 on EC2, eu-west-1 (Ireland)
+# PRODUCTION — RabbitMQ 4.4 on EC2, eu-west-1 (Ireland)
 #
 # Decisions (2026-11-14):
 #   * Production lives in a dedicated AWS account (not 490228638978).

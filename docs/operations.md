@@ -80,6 +80,24 @@ Steps for node `X`:
 6. **Restore** `termination_protection = true` and apply.
 7. Wait until `check_if_node_is_quorum_critical` passes on the next node, then repeat for it.
 
+## Upgrade the RabbitMQ release series (EC2)
+
+A move to a new minor series, such as 4.3 to 4.4, is a normal AMI roll with extra gates. The [Docker acceptance test](validation.md#docker-acceptance-scriptssmoke_clusterpy) has proved this exact sequence from 4.3.7 to 4.4.0; prove it again in staging with production-like definitions and clients.
+
+**It is one-way.** Once a 4.4 node writes classic-queue message store files in its new v2 format, that node cannot go back to 4.3. Rollback means restoring the node's data volume from a snapshot taken before the roll, so take one per node first.
+
+1. Read the [release notes](https://github.com/rabbitmq/rabbitmq-server/releases/tag/v4.4.0) and confirm the breaking changes do not affect your clients. For 4.4.0: the `GET /api/auth/hash_password/{password}` endpoint is now `POST /api/auth/hash_password`; OAuth 2 discovery is validated more strictly; and the AMQP 1.0 / `x-basic-*` headers written by 3.13 and earlier nodes are no longer parsed.
+2. Bake and boot-test a new AMI with the 4.4 image ([Packer](../packer/README.md)).
+3. On any node, enable every feature flag of the **current** series, then confirm none remain disabled:
+   ```sh
+   sudo docker exec rabbitmq rabbitmqctl enable_feature_flag all
+   sudo docker exec rabbitmq rabbitmqctl list_feature_flags name state stability
+   ```
+   RabbitMQ supports a rolling upgrade to the next series only when every stable feature flag is already enabled.
+4. Snapshot each node's data volume (`aws ec2 create-snapshot --volume-id VOLUME_ID`) and wait for the snapshots to complete.
+5. [Roll the nodes](#replace-or-update-one-node) to the new AMI (`nodes.X.ami_id`) one at a time: `a`, `b`, then `c`. Finish promptly: a mixed-version cluster is supported only while the upgrade is in progress, so do not change definitions, policies or topology until it is done.
+6. After all three nodes run 4.4, enable the new series' feature flags with `enable_feature_flag all`, then check that `list_feature_flags` shows every stable flag `enabled`.
+
 ## Change definitions or the bootstrap secret
 
 **Definitions.** Upload a new object version, update the `definitions` input (`version_id`, `sha256`) and apply. The instance role may read any version of that one key, so un-rolled nodes still reboot cleanly with their pinned version. Then [roll every node](#replace-or-update-one-node) promptly. Each node imports its own file at boot. A node still holding an older file re-imports it when it restarts, which can revert changed values such as password hashes or policies (import is additive and never deletes). For an urgent change, also import immediately through the API with [import_definitions.py](../scripts/import_definitions.py) (management UI or an SSM tunnel), and still complete the roll.

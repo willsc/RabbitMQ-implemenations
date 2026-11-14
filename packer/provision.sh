@@ -13,7 +13,7 @@ apt-get install -y --no-install-recommends docker.io python3-boto3 ca-certificat
 systemctl enable --now docker
 docker pull "$RABBITMQ_IMAGE"
 test "$(docker run --rm --entrypoint id "$RABBITMQ_IMAGE" -u rabbitmq)" = 999
-docker run --rm --entrypoint sh "$RABBITMQ_IMAGE" -c 'test "$RABBITMQ_VERSION" != ""; case "$RABBITMQ_VERSION" in 4.3.*) exit 0;; *) exit 1;; esac'
+docker run --rm --entrypoint sh "$RABBITMQ_IMAGE" -c 'test "$RABBITMQ_VERSION" != ""; case "$RABBITMQ_VERSION" in 4.4.*) exit 0;; *) exit 1;; esac'
 test "$(docker image inspect --format '{{.Architecture}}' "$RABBITMQ_IMAGE")" = amd64
 install -d -m 0750 /etc/rabbitmq-estate
 printf '%s\n' "$RABBITMQ_IMAGE" > /etc/rabbitmq-estate/image

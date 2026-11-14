@@ -160,7 +160,7 @@ variable "https_egress_cidrs" {
 }
 
 variable "allow_transient_nonexclusive_queues" {
-  description = "Explicit migration opt-in for RabbitMQ 4.3's deprecated transient non-exclusive queues."
+  description = "Explicit migration opt-in for deprecated transient non-exclusive queues (denied by default since RabbitMQ 4.3)."
   type        = bool
   default     = false
 }

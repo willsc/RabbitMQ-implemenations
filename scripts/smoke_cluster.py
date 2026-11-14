@@ -38,12 +38,20 @@ def wait_until(predicate, timeout=180):
     raise RuntimeError("Timed out waiting for cluster condition")
 
 
+def image_version(image):
+    env = json.loads(run("docker", "image", "inspect", "--format", "{{json .Config.Env}}", image))
+    return next(item.split("=", 1)[1] for item in env if item.startswith("RABBITMQ_VERSION="))
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Cached digest-pinned RabbitMQ 4.3 image")
+    parser.add_argument("--image", required=True, help="Cached digest-pinned RabbitMQ image under test")
+    parser.add_argument("--upgrade-from", help="Optional cached digest-pinned older image: form the cluster on it, then roll each node to --image")
     args = parser.parse_args()
-    if "@sha256:" not in args.image:
-        parser.error("Pin the test image by digest")
+    if any("@sha256:" not in image for image in filter(None, [args.image, args.upgrade_from])):
+        parser.error("Pin test images by digest")
+    expected_version = image_version(args.image)
+    first_image = args.upgrade_from or args.image
     prefix = "rabbitmq-smoke-" + uuid.uuid4().hex[:8]
     names = {k: f"rabbit@{k}.rmq.test" for k in "abc"}
     containers = []
@@ -60,6 +68,18 @@ def main():
             "-addext", "subjectAltName=DNS:localhost", "-keyout", str(folder / "key.pem"), "-out", str(folder / "cert.pem"))
         context = ssl.create_default_context(cafile=str(folder / "cert.pem"))
         run("docker", "network", "create", prefix)
+
+        def start(node, image):
+            base, container = folder / node, prefix + "-" + node
+            run("docker", "run", "-d", "--pull=never", "--name", container, "--network", prefix, "--network-alias", f"{node}.rmq.test",
+                "--user", "999:999", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--tmpfs", "/run",
+                "--ulimit", "nofile=131072:131072",
+                "-e", f"RABBITMQ_NODENAME={names[node]}", "-e", "RABBITMQ_USE_LONGNAME=true", "-e", "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=+S 2:2", "-e", "RABBITMQ_CTL_ERL_ARGS=+S 1:1",
+                "-e", "RABBITMQ_MNESIA_BASE=/var/lib/rabbitmq/mnesia",
+                "-p", "127.0.0.1::5671", "-p", "127.0.0.1::15671",
+                "-v", f"{base / 'etc'}:/etc/rabbitmq:ro", "-v", f"{base / 'data'}:/var/lib/rabbitmq", "-v", f"{base / 'logs'}:/var/log/rabbitmq", image)
+            return container
+
         try:
             for node in "abc":
                 base = folder / node
@@ -80,28 +100,35 @@ def main():
                     os.chmod(path, 0o750 if path.is_dir() else 0o400)
                 if node == "b":
                     # Exercise the production join probe: read-only CLI container, retained cookie.
-                    probe = bootstrap.peer_probe_command(args.image, names["a"], network=prefix, data=base / "data")
+                    probe = bootstrap.peer_probe_command(first_image, names["a"], network=prefix, data=base / "data")
                     run(*probe)
-                    absent = bootstrap.peer_probe_command(args.image, names["c"], network=prefix, data=base / "data")
+                    absent = bootstrap.peer_probe_command(first_image, names["c"], network=prefix, data=base / "data")
                     if subprocess.run(absent, capture_output=True, timeout=60).returncode == 0:
                         raise RuntimeError("Peer probe reported a stopped node as running")
                     print("PASS: follower join probe detects the running seed and rejects an absent peer", flush=True)
-                container = prefix + "-" + node
-                containers.append(container)
-                run("docker", "run", "-d", "--pull=never", "--name", container, "--network", prefix, "--network-alias", f"{node}.rmq.test",
-                    "--user", "999:999", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=256m", "--tmpfs", "/run",
-                    "--ulimit", "nofile=131072:131072",
-                    "-e", f"RABBITMQ_NODENAME={names[node]}", "-e", "RABBITMQ_USE_LONGNAME=true", "-e", "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=+S 2:2", "-e", "RABBITMQ_CTL_ERL_ARGS=+S 1:1",
-                    "-e", "RABBITMQ_MNESIA_BASE=/var/lib/rabbitmq/mnesia",
-                    "-p", "127.0.0.1::5671", "-p", "127.0.0.1::15671",
-                    "-v", f"{base / 'etc'}:/etc/rabbitmq:ro", "-v", f"{base / 'data'}:/var/lib/rabbitmq", "-v", f"{base / 'logs'}:/var/log/rabbitmq", args.image)
+                containers.append(start(node, first_image))
                 if node == "a":
-                    wait_until(lambda: (run("docker", "exec", container, "rabbitmq-diagnostics", "-q", "check_running"), True)[1])
+                    wait_until(lambda: (run("docker", "exec", containers[0], "rabbitmq-diagnostics", "-q", "check_running"), True)[1])
             def cluster_count(container):
                 data = json.loads(run("docker", "exec", container, "rabbitmq-diagnostics", "-q", "cluster_status", "--formatter", "json"))
                 return len(data["running_nodes"])
             wait_until(lambda: all(cluster_count(c) == 3 for c in containers))
-            print("PASS: all three nodes formed one cluster", flush=True)
+            print(f"PASS: all three nodes formed one cluster on {image_version(first_image)}", flush=True)
+            if args.upgrade_from:
+                # Same order as the runbook: all flags enabled, then one node at a time on retained data.
+                run("docker", "exec", containers[0], "rabbitmqctl", "-q", "enable_feature_flag", "all")
+                for node, container in zip("abc", containers):
+                    run("docker", "exec", container, "rabbitmq-upgrade", "drain")
+                    run("docker", "stop", "--time", "60", container)
+                    run("docker", "rm", container)
+                    start(node, args.image)
+                    wait_until(lambda: all(cluster_count(c) == 3 for c in containers))
+                    print(f"PASS: node {node} rolled to {expected_version} and rejoined the mixed-version cluster", flush=True)
+                run("docker", "exec", containers[0], "rabbitmqctl", "-q", "enable_feature_flag", "all")
+                flags = json.loads(run("docker", "exec", containers[0], "rabbitmqctl", "-q", "list_feature_flags", "name", "state", "stability", "--formatter", "json"))
+                disabled = [f["name"] for f in flags if f["stability"] == "stable" and f["state"] != "enabled"]
+                assert not disabled, f"Stable feature flags still disabled after upgrade: {disabled}"
+                print("PASS: all stable feature flags enabled after the upgrade", flush=True)
             for container in containers:
                 ports = json.loads(run("docker", "inspect", container))[0]["NetworkSettings"]["Ports"]
                 amqp_port = int(ports["5671/tcp"][0]["HostPort"])
@@ -112,10 +139,11 @@ def main():
                 request = urllib.request.Request(f"https://localhost:{ui_port}/api/overview")
                 request.add_header("Authorization", "Basic " + base64.b64encode(f"smoke:{password}".encode()).decode())
                 with urllib.request.urlopen(request, context=context, timeout=10) as response:
-                    assert json.load(response)["rabbitmq_version"].startswith("4.3.")
+                    reported = json.load(response)["rabbitmq_version"]
+                    assert reported == expected_version, f"Expected {expected_version}, node reports {reported}"
                 with urllib.request.urlopen(f"https://localhost:{ui_port}/", context=context, timeout=10) as response:
                     assert response.status == 200
-            print("PASS: verified TLS, AMQP 0-9-1 and authenticated HTTPS UI on every node", flush=True)
+            print(f"PASS: verified TLS, AMQP 0-9-1 and authenticated HTTPS UI reporting {expected_version} on every node", flush=True)
             run("docker", "stop", "--time", "30", containers[2])
             wait_until(lambda: all(cluster_count(c) == 2 for c in containers[:2]))
             print("PASS: surviving nodes retain a two-node majority", flush=True)

@@ -11,7 +11,8 @@ Last run: 2026-11-14. No AWS account was used; nothing on this page is evidence 
 | Packer / amazon plugin | 1.15.0 / 1.8.4 |
 | Python | 3.12 |
 | Docker Engine | 29.1.3 |
-| RabbitMQ image | `rabbitmq:4.3.7-management@sha256:8e913a7748f808be4ce117c3df11817935775bcd83934d4de92441a7e93e9899` |
+| RabbitMQ image | `rabbitmq:4.4.0-management@sha256:753099a19b577c322117f793f864b3129cbba96d40317221a69d73976e3c843c` (Erlang/OTP 29) |
+| Upgrade-from image | `rabbitmq:4.3.7-management@sha256:8e913a7748f808be4ce117c3df11817935775bcd83934d4de92441a7e93e9899` |
 
 ## Offline checks: `bash scripts/verify.sh`
 
@@ -38,13 +39,17 @@ The Terraform tests plan against a mocked AWS provider. They prove variable vali
 
 ## Docker acceptance: `scripts/smoke_cluster.py`
 
-Runs three containers from the pinned image with the module's rendered `rabbitmq.conf`, plugins, definitions import, read-only config mounts, UID 999, dropped capabilities and a read-only root filesystem. Result: **all five stages pass**.
+Runs three containers from the pinned 4.4.0 image with the module's rendered `rabbitmq.conf`, plugins, definitions import, read-only config mounts, UID 999, dropped capabilities and a read-only root filesystem. Result: **all five stages pass**.
 
 1. The production peer-join probe (`peer_probe_command`, read-only container using the retained cookie) detects the running seed and reports an absent peer as not running.
 2. Three nodes form one cluster.
-3. On every node: TLS handshake with hostname verification, AMQP 0-9-1 `connection.start`, authenticated HTTPS management API reporting 4.3.x, and the UI page.
+3. On every node: TLS handshake with hostname verification, AMQP 0-9-1 `connection.start`, authenticated HTTPS management API reporting exactly the image's `RABBITMQ_VERSION` (4.4.0), and the UI page.
 4. With one node stopped, the other two keep a running majority.
 5. The stopped node restarts and rejoins using its retained data.
+
+**Rolling upgrade, `--upgrade-from` 4.3.7: all stages pass.** The cluster forms on 4.3.7 and all feature flags are enabled. Then each node in turn is drained, stopped, and started from the 4.4.0 image on its retained data, and rejoins the mixed-version cluster. Afterwards, enabling all feature flags leaves no stable flag disabled, and the five stages above pass against 4.4.0.
+
+Separately, a single 4.4.0 node booted with `allow_transient_nonexclusive_queues = true` rendered into its config; it reports `transient_nonexcl_queues` as permitted, so the module's migration opt-in still works.
 
 This test found a boot-blocking defect, now fixed with a regression test. The generated `management.ssl.ip = 0.0.0.0` was passed into the TLS options, and the 15671 listener failed with `badarg`. With the management UI enabled, every EC2 node would have failed to start.
 
