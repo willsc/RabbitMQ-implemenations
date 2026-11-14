@@ -4,7 +4,7 @@ Two independent Terraform modules for this AMQP **0-9-1** estate:
 
 | | [EC2](modules/ec2) | [Amazon MQ](modules/amazon-mq) |
 |---|---|---|
-| Engine | Digest-pinned RabbitMQ 4.4 with matching Erlang | AWS-supported RabbitMQ 4.3 by default |
+| Engine | Digest-pinned RabbitMQ 4.4.0 with bundled Erlang/OTP 29 | AWS-managed RabbitMQ 4.3 by default (4.2 allowed) |
 | Hosts | Three Ubuntu **26.04** EC2 instances, one per AZ | AWS-managed `CLUSTER_MULTI_AZ`, three nodes |
 | Initial sizing | `r5n.2xlarge` per node | `mq.m7g.2xlarge` per node; benchmark independently |
 | TLS | Native RabbitMQ TLS on 5671, enabled by default; optional for private-only deployments | Mandatory AMQPS on 5671 |
@@ -16,6 +16,22 @@ Two independent Terraform modules for this AMQP **0-9-1** estate:
 
 These modules provision into an existing VPC. They do not deploy Artemis, EFS, Kubernetes or Amazon MQ for ActiveMQ. The Ubuntu requirement applies to EC2; AWS controls Amazon MQ's operating system.
 
+## Versions
+
+| Component | Supported | Pinned or tested |
+|---|---|---|
+| RabbitMQ (EC2) | 4.4 series, enforced by the Packer bake | `rabbitmq:4.4.0-management@sha256:753099a19b577c322117f793f864b3129cbba96d40317221a69d73976e3c843c` |
+| Erlang/OTP (EC2) | Whatever the RabbitMQ image bundles | 29 |
+| RabbitMQ (Amazon MQ) | `engine_version` 4.3 (default) or 4.2 | AWS selects and upgrades the patch release |
+| Upgrade path (EC2) | Rolling, one series at a time ([runbook](docs/operations.md#upgrade-the-rabbitmq-release-series-ec2)) | 4.3.7 → 4.4.0 |
+| Ubuntu (EC2 hosts) | 26.04 amd64 | Your approved base AMI |
+| Terraform | >= 1.9.0, < 2.0.0 | 1.15.5 |
+| AWS provider | >= 6.54, < 7.0 | 6.73.0 (committed lock files) |
+| Packer / amazon plugin | >= 1.11.0 / >= 1.3.0, < 2.0.0 | 1.15.0 / 1.8.4 |
+| Python, Docker Engine (local tests) | | 3.12, 29.1.3 |
+
+[Validation evidence](docs/validation.md) records what was run against these versions.
+
 ## Start here
 
 1. Read [the EC2 guide](modules/ec2/README.md) or [the Amazon MQ guide](modules/amazon-mq/README.md).
@@ -25,7 +41,7 @@ These modules provision into an existing VPC. They do not deploy Artemis, EFS, K
 5. Run `terraform init`, `terraform validate`, and `terraform plan`. Review the plan before applying it to a staging account. Follow the [acceptance checklist](docs/operations.md#acceptance-before-production).
 6. Run day-2 changes (AMI rolls, resizes, certificate and definitions changes, node rebuilds) through the [operations runbooks](docs/operations.md).
 
-Terraform >=1.9 and AWS provider >=6.54,<7 are supported. Local validation uses the committed provider lock files. The verification script checks formatting, the Packer template, the Python runtime unit tests, both modules (`terraform test` with a mocked provider) and both examples. It needs no AWS credentials and creates no AWS resources.
+Local validation uses the committed provider lock files. The verification script checks formatting, the Packer template, the Python runtime unit tests, both modules (`terraform test` with a mocked provider) and both examples. It needs no AWS credentials and creates no AWS resources.
 
 ```sh
 bash scripts/verify.sh
