@@ -10,6 +10,7 @@ override.tf.json
 *_override.tf.json
 *.tfplan
 terraform.tfvars
+sandbox.tfvars
 
 # Packer
 build.pkrvars.hcl
