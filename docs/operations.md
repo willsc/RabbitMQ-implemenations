@@ -145,7 +145,7 @@ A move to a new minor series, such as 4.3 to 4.4, is a normal AMI roll with extr
 1. Move all clients away and confirm zero connections.
 2. Set `nlb_deletion_protection = false` and `termination_protection = false` on every node (EC2), then apply.
 3. Snapshot data volumes if retention requires it.
-4. Remove `prevent_destroy` in a reviewed copy of the module and destroy. The same applies to the Amazon MQ broker.
+4. Lift `prevent_destroy` with a reviewed, temporary override file and destroy ([steps](../README.md#destroy)). The same applies to the Amazon MQ broker.
 
 ## Acceptance before production
 

@@ -57,6 +57,90 @@ python3 scripts/smoke_cluster.py --image 'rabbitmq:4.4.0-management@sha256:75309
 
 See [validation evidence and limits](docs/validation.md). A passing local test is not proof of AWS routing, Ubuntu AMI boot, regional service support or 83 MB/s capacity.
 
+## Deploy
+
+Each directory under [examples](examples) is a root module. Keep one var file per environment and keep account-specific ones out of git (`terraform.tfvars` and `sandbox.tfvars` are ignored).
+
+### Prerequisites
+
+| | EC2 | Amazon MQ |
+|---|---|---|
+| Subnets | Three, one per AZ, public-IP auto-assignment off | Same |
+| Private access to AWS APIs | NAT gateway or VPC endpoints (below) | Not needed |
+| Image | AMI baked with [Packer](packer/README.md) | None |
+| Secrets | Bootstrap secret ([format](modules/ec2/README.md#runtime-secret)) | Admin password, passed as `TF_VAR_admin_password` |
+| Definitions | Versioned S3 object and its SHA-256 ([pipeline](docs/migration.md#4-definitions-pipeline)) | Imported through the API after creation |
+| KMS | Key for the EBS volumes | Customer-managed key for broker storage |
+| DNS | Existing hosted zone for `tls_dns` (and `management_dns`, if used) | None |
+
+The EC2 order is in [first deployment](docs/operations.md#first-deployment-ec2).
+
+**Default VPC subnets.** They assign public IPs on launch, and both modules reject them at plan time (`Use private node subnets…` / `…disable public IP assignment`). Turn the setting off on each subnet; it affects only instances launched afterwards:
+
+```sh
+aws ec2 modify-subnet-attribute --subnet-id subnet-REPLACE --no-map-public-ip-on-launch
+```
+
+**No NAT gateway.** EC2 nodes never get a public IP, so their first boot needs a private path to AWS APIs. Create an S3 gateway endpoint on the nodes' route table, plus interface endpoints for `secretsmanager`, `logs`, `monitoring`, `ssm`, `ssmmessages` and `ec2messages` with private DNS on and a security group allowing 443 from the VPC CIDR. Interface endpoints are billed hourly per endpoint per AZ, used or not. Amazon MQ needs none of this.
+
+**No VPN.** Keep every endpoint private: `tls_public = false` and the VPC CIDR in `tls_client_cidrs` (EC2), or in `client_cidrs` and `management_cidrs` (Amazon MQ). From a workstation, reach EC2 nodes with [SSM port forwarding](modules/ec2/README.md#tls-and-the-ui). Amazon MQ needs a host inside the VPC to tunnel through.
+
+**Packer without a VPN.** The template reaches the builder on its private IP and gives it no public address, so the runner needs private access to the build subnet, and the subnet needs outbound access to Ubuntu mirrors, Docker Hub and the agent download URLs. Outside production, a runner with no route into the VPC can build from a local copy of the template with `ssh_interface = "public_ip"` and `associate_public_ip_address = true`, in a subnet with an Internet Gateway route. The temporary SSH rule is still limited to `builder_cidr`.
+
+### Apply
+
+```sh
+cd examples/ec2   # or examples/amazon-mq
+export TF_VAR_admin_password='...'   # Amazon MQ only: from your secret store, never a var file
+terraform init
+terraform plan -var-file=<env>.tfvars -out=<env>.tfplan
+terraform apply <env>.tfplan
+```
+
+Plan files and state contain the Amazon MQ admin password. `*.tfplan` and `*.tfstate` are git-ignored; use an encrypted, locked remote backend for anything shared.
+
+- **EC2:** node `a` seeds the cluster and `b`/`c` join it. Readiness alarms fire for the first few minutes. Check the cluster with the [SSM commands](docs/operations.md#accessing-a-node).
+- **Amazon MQ:** a three-node `mq.m7g.large` cluster in eu-west-1 had RabbitMQ running about 12 minutes after creation started. Import definitions afterwards ([migration, section 4](docs/migration.md#4-definitions-pipeline)).
+
+## Destroy
+
+Both modules set `prevent_destroy = true` on their stateful resources, the Amazon MQ broker and the EC2 data volumes, so a plain `terraform destroy` fails with `Instance cannot be destroyed`. That is deliberate. For production, complete [decommissioning](docs/operations.md#decommissioning) steps 1–3 first.
+
+1. Wait for any running `apply` to finish. It holds the state lock, and AWS will not delete a broker that is still being created.
+2. **EC2:** if `nlb_deletion_protection` or any `nodes.*.termination_protection` is `true`, set it to `false` and apply. Snapshot the data volumes if you need to keep them; destroy deletes them.
+3. Lift the guard with a temporary override file in the module. Terraform merges only `prevent_destroy`; the module's preconditions and other lifecycle settings still apply. `*_override.tf` is git-ignored.
+
+   ```sh
+   # EC2
+   cat > modules/ec2/destroy_override.tf <<'EOF'
+   resource "aws_ebs_volume" "data" {
+     lifecycle {
+       prevent_destroy = false
+     }
+   }
+   EOF
+
+   # Amazon MQ
+   cat > modules/amazon-mq/destroy_override.tf <<'EOF'
+   resource "aws_mq_broker" "this" {
+     lifecycle {
+       prevent_destroy = false
+     }
+   }
+   EOF
+   ```
+
+4. Destroy from the example directory with the var file you applied with. Amazon MQ still needs `TF_VAR_admin_password` set.
+
+   ```sh
+   terraform destroy -var-file=<env>.tfvars
+   ```
+
+5. **Delete the override file straight away:** `rm modules/*/destroy_override.tf`. While it exists, every plan from that checkout, production included, can destroy the broker or the data volumes.
+6. Remove what Terraform did not create:
+   - Amazon MQ: the log groups AWS created, `/aws/amazonmq/broker/<broker-id>/general` and `/connection`.
+   - Prerequisites, if nothing else uses them: VPC endpoints and their security group, the AMI and its snapshot, secrets (`--force-delete-without-recovery` frees the name immediately), the definitions bucket (delete every object version first), the hosted zone and customer KMS keys (deletion waits 7–30 days). Turn subnet public-IP assignment back on only if something else needs it.
+
 ## Availability and migration constraints
 
 Three nodes make the broker service and cluster metadata tolerant of a single node/AZ failure. **RabbitMQ 4 classic queues are not replicated.** Transient messages can be lost during failures, and clients must recover connections, channels, subscriptions, exclusive/auto-delete queues and bindings. Use durable quorum queues where message replication is required; that is a separate application design decision.
